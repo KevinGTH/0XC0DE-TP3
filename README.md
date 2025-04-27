@@ -4,7 +4,7 @@
 
 ### **¿Que es UEFI y como se usa?**
 
-La interfaz de firmware extensible unificada​ o UEFI (del inglés unified extensible firmware interface) es una especificación que define una interfaz entre el sistema operativo y el firmware. UEFI reemplaza la antigua interfaz del sistema básico de entrada y salida (BIOS) estándar presentado en los PC IBM como ROM BIOS de PC IBM.
+La interfaz de firmware extensible unificada o UEFI (del inglés unified extensible firmware interface) es una especificación que define una interfaz entre el sistema operativo y el firmware. UEFI reemplaza la antigua interfaz del sistema básico de entrada y salida (BIOS) estándar presentado en los PC IBM como ROM BIOS de PC IBM.
   
 Se usa principalmente interactuando con su menú de configuración durante el arranque del sistema (generalmente presionando teclas como F2, F10, F12, SUPR o ESC, dependiendo del fabricante). Estando ahí, se pueden modificar opciones como el orden de arranque, configuraciones de seguridad, habilitar/deshabilitar componentes de hardware, actualizar el propio firmware UEFI, y configurar parámetros de rendimiento o perfiles de memoria RAM.
 
@@ -52,5 +52,126 @@ El uso de coreboot ofrece múltiples beneficios, especialmente para usuarios té
 - **Flexibilidad y personalización:** Permite el uso de diferentes "payloads", como SeaBIOS para arranque legacy, iPXE para arranque por red, o edk2 para entornos UEFI, lo que ofrece flexibilidad para adaptarse a diversas necesidades. Los usuarios pueden personalizar aspectos como pantallas de arranque (en formato JPG), consolas de depuración accesibles vía puertos seriales, USB, SPI o incluso el altavoz de la PC, y recuperar registros de arranque una vez que el sistema operativo esté en funcionamiento.
 
 - **Reutilización y mantenimiento:** Maximiza la reutilización de rutinas de inicialización de hardware a través de la separación de preocupaciones entre coreboot y el payload, lo que facilita su uso en diferentes escenarios, desde dispositivos estándar hasta aplicaciones especializadas. Evita la fragmentación manteniendo todo en un solo árbol de código fuente
+
+## **Linker**
+
+### **¿Que es un Linker?¿Que hace?**
+Un linker, también conocido como editor de enlaces, es un componente esencial en el proceso de compilación de programas.
+Toma uno o más archivos objeto, que son el resultado de la compilación de código fuente (por ejemplo C o ensamblador) 
+por un compilador y los combina en un solo archivo ejecutable, biblioteca o archivo objeto adicional. 
+
+Su función principal incluye lo siguiente:
+- **Resolución de referencias externas:** conecta llamadas a funciones o referencias a variables que están definidas en otros archivos objeto. Por ejemplo, si un archivo objeto A necesita usar una función definida en B, el linker resuelve esta dependencia.
+- **Relocalización:** ajusta las direcciones de los archivos objeto para reflejar sus posiciones finales en memoria, asegurando que las instrucciones y datos se alojen correctamente.
+- **Generación de archivos ejecutables:** crea un archivo ejecutable que puede ser cargado y ejecutado por el sistema operativo, o en este caso, por la BIOS para un sector de arranque.
+
+### Scripts
+Para continuar con los desafíos, se detallan los scripts que se van a utilizar y a los cuales se va a hacer referencia.
+
+Primero tenemos el **linker** que lo denominamos **link.ld** el cual extraemos de la carpeta examples/HelloWorld
+```plaintext
+SECTIONS
+{
+    /* The BIOS loads the code from the disk to this location.
+     * We must tell that to the linker so that it can properly
+     * calculate the addresses of symbols we might jump to.
+     */
+    . = 0x7c00;
+    .text :
+    {
+        __start = .;
+        *(.text)
+        /* Place the magic boot bytes at the end of the first 512 sector. */
+        . = 0x1FE;
+        SHORT(0xAA55)
+    }
+}
+```
+
+Además, incorporamos el código **main.S** que está escrito en ensamblador y la extensión **".S"** indica que el archivo debe pasar por el preprocesador de C/C++ antes de ensamblarse, lo cual implica que pueden contener directivas como: #include, #define, etc. 
+
+```asm
+.code16
+    mov $msg, %si
+    mov $0x0e, %ah
+loop:
+    lodsb
+    or %al, %al
+    jz halt
+    int $0x10
+    jmp loop
+halt:
+    hlt
+msg:
+    .asciz "hello world"
+
+```
+
+### **¿Qué es la dirección que aparece en el script del linker? ¿Por qué es necesaria?**
+
+El script de enlace [link.ld](src/link.ld) incluye la linea
+```asm
+. = 0x7c00;
+```
+que establece el contador de ubicación (location counter) en la dirección de memoria 0x7c00.
+
+Esta dirección es muy importante debido a que la BIOS, al iniciar el sistema, lee los primeros 512 bytes de un dispositivo de arranque y los carga en memoria comenzando en esa dirección. Este valor de dirección es el estandar para sectores de arranque en sistemas x86.
+
+Esta dirección asegura que el código ejecutable se coloque exactamente donde la BIOS espera encontrarlo, en caso de no especificarlo el linker podría colocar el código ejecutable en una dirección incorrecta haciendo que la BIOS no lo ejecute correctamente.
+```asm
+/* Place the magic boot bytes at the end of the first 512 sector. */
+        . = 0x1FE;
+        SHORT(0xAA55)
+```
+La dirección **0X1FE** es el byte final del sector de arranque que tiene una longitud de 512 bytes, basicamente esta dirección se utiliza para colocar los "magic boot bytes" en el cual se agrega el valor hexadecimal **0xAA55** que corresponde a una firma especial que le indica a la BIOS que el dispositivo es un dispositivo de arranque válido.
+
+### Objdump y Hexdump
+Para analizar la ubicación del programa dentro de la imagen podemos utilizar dos tipos de herramientas que son: objdump y hexdump
+- **Objdump:** esta herramienta muestra información detallada sobre archivos objeto, como secciones, simbolos y desensamblaje del codigo. Cuando lo aplicamos a **main.o**, vamos a visualizar la sección **.text** con direcciones relativas comenzando desde 0, ya que los archivos objetos no tienen direcciones absolutas hasta el enlace.
+- **Hexdump:** esta herramienta muestra el contenido del archivo binario en formato hexadecimal, decimal u octal. Cuando lo ejecutemos en **main.img** nos muestra los bytes crudos del archivo.
+
+Para realizar esta ejecución debemos seguir los siguientes pasos:
+```cmd
+as -g -o main.o main.S
+ld --oformat binary -o main.img -T link.ld main.o
+qemu-system-x86_64 -hda main.img
+```
+Estos comandos trabajan en conjunto para ensamblar, compilar y ejecutar
+
+El primero convierte el codigo ensamblador de [main.s](src/main.S) en un archivo objeto **main.o** utilizando el comando **as**, la flag **"-g"** indica que se debe añadir información de depuracion que es importante para depurar con **gdb**, la siguiente **"-o"** siempre indica el nombre del archivo final en este caso el objeto.
+
+El siguiente comando utiliza el linker de **GNU** para combinar los archivos objeto y generar una imagen binaria. Para asegurarnos de esto utilizamos la flag **--oformat binary**, lo cual nos asegura que el formato de salida debe ser binario.
+
+Y el último, ejecuta un emulador para probar la imagen generada utilizando **qemu**, lo que define una maquina con una arquitectura **x86_64** y la flag **"-hda main.img"** especifica que main.img sea tratado como el disco duro primario de la maquina virtual emulada.
+
+![hello world example](images/00.png)
+*Figura1: main.S example*
+
+Primero vamos a analizar el archivo binario con **hexdump**. Para realizar esto ejecutamos el siguiente comando:
+```cmd
+hd main.img
+```
+
+Y lo que vamos a observar es la siguiente salida:
+![hexdump output](images/01.png)
+
+El tamaño del binario **main.img** va desde la posición de memoria 00000000 hasta la 00000200 lo que indica claramente que se tiene un tamaño de 512 bytes.
+
+En la posición de memoria 00000010 (y además se incluye el último byte de la posicion 00000000) comienza la cadena de texto mostrada, nos damos cuenta de esto, ya que si traducimos al codigo ascii lo siguiente: **68 65 6c 6c 6f 20 77 6f 72  6c 64**, obtenemos la frase de 
+"hello world"
+
+También podemos notar en los ultimos dos bytes se encuentra la firma de arranque **"55 AA"**, lo cual indica que es un tipo archivo de arranque valido.
+
+Utilizando la otra herramienta **Objdump** ejecutamos el siguiente comando:
+```cmd
+objdump -d main.o
+objdump -D main.o
+```
+
+Y lo que vamos a observar es la siguiente salida:
+![objdump output](images/02.png)
+
+En donde especialmente nos enfocamos en la parte de **.text** y ahora los bytes que visualizabamos anteriormente utilizando la herramienta de **Hexdump**, los vemos representados por sus instrucciones respectivas en ensamblador .
+
 
 
