@@ -171,7 +171,65 @@ objdump -D main.o
 Y lo que vamos a observar es la siguiente salida:
 ![objdump output](images/02.png)
 
-En donde especialmente nos enfocamos en la parte de **.text** y ahora los bytes que visualizabamos anteriormente utilizando la herramienta de **Hexdump**, los vemos representados por sus instrucciones respectivas en ensamblador .
+En donde especialmente nos enfocamos en la parte de **.text** y ahora los bytes que visualizabamos anteriormente utilizando la herramienta de **Hexdump**, los vemos representados por sus instrucciones respectivas en ensamblador.
 
+### **Depuración con GDB**
 
+Utilizando la herramienta de **QEMU** con **GDB**, podemos depurar el codigo [main.S](src/main.S). Estas dos herramientas en conjunto permiten pasarle al **QEMU** la imagen generada con el codigo y el linker.
+
+Para hacer esto primero debemos ejecutar el siguiente comando:
+```cmd
+qemu-system-i368 -drive file=main.img,format=raw -boot a -s -S -monitor stdio
+```
+
+- **-drive file=main.img,format=raw:** carga la imagen en el disco
+- **-boot a:** arranca la imagen del disco
+- **-s:** Inicia un servidor GDB en el puerto 1234
+- **-S:** Le dice al CPU que se detenga hasta que GDB se conecte
+
+Después de hacer esto, **QEMU** se inicia y muestra una ventana congelada esperando que se conecte el **GDB**.
+![qemu start](images/03.png)
+
+Luego necesitamos abrir otra terminal y ejecutar el depurador **GDB**, además escribimos los siguientes comandos que conecta al depurador con el servidor **GDB** que **QEMU** inició en el puerto local 1234.
+```cmd
+gdb -q
+(gdb) target remote localhost:1234
+(gdb) set architecture i8086
+(gdb) break *0x7c00
+(gdb) continue
+```
+- **gdb -q:** inicializa el depurador GDB sin mostrar el mensaje de copyright.
+- **(gdb) target remote localhost:1234:** conecta GDB al servidor GDB de QEMU.
+- **(gdb) set architecture i8086:** Establecemos que la CPU este depurando en modo real de 16 bits que corresponde a la arquitectura i8086
+- **(gdb) break \*0x7c00:** creamos un punto de interrupción en la dirección de memoria 0x7c00. Esta dirección corresponde a los primeros 512 bytes del disco de arranque (bootloader)
+
+![gdb start](images/04.png)
+
+Esto nos ubica en la dirección de 0x7c00 que es el inicio del código a depurar. Para ver en ensamblador el codigo, podemos ejecutar el comando de **disassemble (x/20i 0x7c00)**.
+
+Nuestro objetivo con esto es poner puntos de breakpoint para que visualicemos la ejecución paso a paso del codigo [main.S](src/main.S), aqui debemos encontrar la direccion de memoria en donde se agregan los caracteres para formar la frase de "hello world".
+
+Esto lo hacemos ejecutando los siguientes comandos:
+
+```cmd
+(gdb) x/20i 0x7c00
+(gdb) break *0x7c0a
+(gdb) continue
+```
+
+- **(gdb) x/20i 0x7c00:** muestra en codigo ensamblador las siguientes 20 instrucciones a partir de la direccion de memoria 0x7c00.
+- **(gdb) break \*0x7c0a:** establece un punto de interrupcion en la dirección de memoria en donde se agrega el caracter de la cadena "hello world".
+
+![disassemble](images/05.png)
+
+Además, con un comando podemos ver el registro **al** que corresponde a los 8 bits de la parte baja del registro **AX**.
+Donde se puede ver claramente que se muestra en hexadecimal el valor **0x68** que representa en codigo ascii a la letra **h**. Ademas el monitor de **QEMU** todavia no muestra ninguna letra ya que se le debe dar un step.
+![registro al](images/06.png)
+
+Despues de ejecutar el comando de **continue** observamos lo siguiente:
+![primer caracter](images/07.png)
+
+Y asi, sucesivamente podemos ir ejecutando el comando de **continue** y ver en **qemu** como se va escribiendo el mensaje letra por letra.
+![primer caracter](images/08.png)
+![cadena final](images/09.png)
 
