@@ -233,3 +233,151 @@ Y asi, sucesivamente podemos ir ejecutando el comando de **continue** y ver en *
 ![primer caracter](images/08.png)
 ![cadena final](images/09.png)
 
+## **Modo protegido**
+
+Para realizar un código en assembler que utilice el modo protegido lo primero es crear una tabla de descriptores globales (GDT) para ello hacemos lo siguiente:
+
+```assembler
+gdt_start:
+gdt_null:
+    .long 0x0
+    .long 0x0
+gdt_code:
+    .word 0xffff
+    .word 0x0
+    .byte 0x0
+    .byte 0b10011010
+    .byte 0b11001111
+    .byte 0x0
+gdt_data:
+    .word 0xffff
+    .word 0x0
+    .byte 0x0
+    .byte 0b10010010
+    .byte 0b11001111
+    .byte 0x0
+gdt_end:
+gdt_descriptor:
+    .word gdt_end - gdt_start
+    .long gdt_start
+```
+
+La tabla inicia en *gdt_start* y tiene 3 descriptores, *gdt_null*, *gdt_code* y *gdt_data*.
+
+El segmento *gdt_null* indica un segmento nulo sin una dirección válida, para evitar el uso de un descriptor de segmento inválido. Esto es necesario para compatibilidad con la arquitectura x86 que espera el segmento nulo para garantizar que las primeras referencias de segmentación GDT no sean accidentales.
+
+Los segmentos de código y de datos inician con la linea ``.word 0xffff`` estos son los bits 0 al 15 del límite del segmento en bytes, en este caso 0xffff. Luego la linea ``.word 0x0`` y ``.byte 0x0`` indican la dirección base del segmento (bits 0 al 23), en este caso en la dirección 0. 
+
+El siguiente byte representa algunos atributos del descriptor de la siguiente manera:  
+
+- Bit 7: Accedido. Se pone en 1 cuando el procesador accede al segmento.
+- Bits 6-4: Tipo. 101 indica código, 001 indica datos.
+- Bit 3: Tipo de segmento. El valor 1 indica un segmento normal.
+- Bits 2-1: Nivel de privilegio. En este caso 0 indica el privilegio más alto.
+- Bit 0: Bit de presencia. Indica si el segmento está cargado en memoria.
+
+El siguiente byte contiene los bits 16 al 19 del límite de segmento y los últimos 4 atributos
+
+- Bit 3: Disponible: Indica si el segmentoe stá disponible para el usuario.
+- Bit 1: Defecto (código)/Grande (datos). Si es 1 las direcciones y operandos son de 32 bits, sino son de 16.
+- Bit 0: Granularidad. Si es 0 el límite es en butes, si es 1 el límite es en páginas de 4KB.
+
+Por último el byte en 0 del final son los bits 24 al 31 de la base del segmento.
+
+Así obtenemos una tabla de descriptores con segmentos separados para datos y código.
+
+Luego al inicio del archivo agregamos lo siguiente:
+
+```assembler
+.code16
+    .equ CODE_SEG, 8
+    .equ DATA_SEG, gdt_data - gdt_start
+
+    lgdt gdt_descriptor
+
+    /* Habilitar el bit PE (Protection Enable) en CR0 */
+    mov %cr0, %eax
+    orl $0x1, %eax
+    mov %eax, %cr0
+
+    ljmp $CODE_SEG, $protected_mode
+```
+
+De principal interés es la línea ``lgdt gdt_descriptor``, que le indica al procesador donde se encuentra la tabla GDT en la memoria. Luego las siguientes instrucciones habilitan el bit PE del registro de control 0, para habilitar el modo protegido. Finalmente saltamos al segmento de código iniciando en la etiqueta *$protected_mode* donde estará nuestro código.
+
+### **¿Con qué valor se cargan los registros de segmento**
+
+El código lo iniciamos indicando que estamos en modo de 32 bits y configurando los registros de segmento.
+
+```
+.code32
+protected_mode:
+    mov $DATA_SEG, %ax
+    mov %ax, %ds
+    mov %ax, %es
+    mov %ax, %fs
+    mov %ax, %gs
+    mov %ax, %ss
+```
+
+Utilizamos el segmento de datos que preparamos para todos los registros de segmento. Podíamos también, por ejemplo, definir un segmento extra para la pila y asignarlo al registro ss. Una vez hecho esto podemos comenzar con el programa en modo protegido.
+
+En este caso creamos un *hello world* que no vamos a explicar en mucho detalle. Para compilar y ejecutar utilizamos:
+
+```
+as --32 -o main.o main.S
+ld -m elf_i386 --oformat binary -o main.img -T link.ld main.o
+qemu-system-x86_64 -drive format=raw,file=main.img
+```
+
+El resultado fue:
+
+![Hello World en modo protegido](images/HW_modo_protegido.png)
+
+
+### **¿Qué sucede al cambiar los bits de acceso del segmento de datos a solo lectura?**
+
+Cambiando la linea 39 del archivo main.S en el directorio "src/modo protegido" de
+
+    .byte 0b10010010
+
+A un valor donde limpiamos la bandera de permisos de escritura, es decir:
+
+    .byte 0b10010000
+
+Quitamos los permisos de escritura sobre el segmento de datos, luego si volvemos a correr con qemu observaremos que qemu reinicia constantemente, esto se debe a que se dispara una interrupción y no la atendemos.
+
+Para ver exactamente donde ocurre la interrupción compilamos el programa para utilizar gdb de la misma manera que se hizo previamente, es decir:
+
+```
+as -g -o main.o main.S
+ld --oformat binary -o main.img -T link.ld main.o
+qemu-system-x86_64 -hda main.img
+```
+
+Pero esta vez desde el directorio "src/modo protegido". Antes de ejecutar gdb realizaremos un object dump de main.img para averiguar en que linea se encuentra la etiqueta "protected_mode", es decir:
+
+```
+objdump -d main.o
+```
+
+El resultado será algo así:
+
+![objdump de main.img en modo protegido](images/protected_mode_objdump.png)
+
+El resultado se recorto en la imagen al punto de interés, la etiqueta protected_mode , que en este caso está en la dirección 40. Como sabemos que 0x7c00 es la dirección de los primeros bytes del bootloader debemos sumar 40 a esta dirección para encontrar la dirección de código de la etiqueta, utilizamos esta información para colocar un break en dicha dirección.
+
+![gdb luego de un break en 0x7c40 + x/20i](images/protected_mode_gdb.png)
+
+Luego de ejecutar x/20i 0x7c40 observamos que coincide con el código de main.S luego de la etiqueta protected_mode. Podremos ahora un break en la dirección 0x7c4c (que es donde se terminan de setear los registros) e intentaremos avanzar un step.
+
+![interrupción observada en gdb](images/protected_mode_int_gdb.png)
+
+Nótese que la dirección que se ejecuta luego del step no es 0x7c4e, sino que es 0xe05b, esto indica que (como era de esperarse) al intentar ejecutar la línea:
+
+```
+mov $message, %ecx
+```
+
+Una interrupción se dispara por no tener permisos para escribir en el segmento de datos.
+
