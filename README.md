@@ -305,7 +305,7 @@ Luego al inicio del archivo agregamos lo siguiente:
 
 De principal interés es la línea ``lgdt gdt_descriptor``, que le indica al procesador donde se encuentra la tabla GDT en la memoria. Luego las siguientes instrucciones habilitan el bit PE del registro de control 0, para habilitar el modo protegido. Finalmente saltamos al segmento de código iniciando en la etiqueta *$protected_mode* donde estará nuestro código.
 
-## **¿Con qué valor se cargan los registros de segmento**
+### **¿Con qué valor se cargan los registros de segmento**
 
 El código lo iniciamos indicando que estamos en modo de 32 bits y configurando los registros de segmento.
 
@@ -335,5 +335,49 @@ El resultado fue:
 ![Hello World en modo protegido](images/HW_modo_protegido.png)
 
 
-## **¿Qué sucede al cambiar los bits de acceso del segmento de datos a solo lectura?**
+### **¿Qué sucede al cambiar los bits de acceso del segmento de datos a solo lectura?**
+
+Cambiando la linea 39 del archivo main.S en el directorio "src/modo protegido" de
+
+    .byte 0b10010010
+
+A un valor donde limpiamos la bandera de permisos de escritura, es decir:
+
+    .byte 0b10010000
+
+Quitamos los permisos de escritura sobre el segmento de datos, luego si volvemos a correr con qemu observaremos que qemu reinicia constantemente, esto se debe a que se dispara una interrupción y no la atendemos.
+
+Para ver exactamente donde ocurre la interrupción compilamos el programa para utilizar gdb de la misma manera que se hizo previamente, es decir:
+
+```
+as -g -o main.o main.S
+ld --oformat binary -o main.img -T link.ld main.o
+qemu-system-x86_64 -hda main.img
+```
+
+Pero esta vez desde el directorio "src/modo protegido". Antes de ejecutar gdb realizaremos un object dump de main.img para averiguar en que linea se encuentra la etiqueta "protected_mode", es decir:
+
+```
+objdump -d main.o
+```
+
+El resultado será algo así:
+
+![objdump de main.img en modo protegido](images/protected_mode_objdump.png)
+
+El resultado se recorto en la imagen al punto de interés, la etiqueta protected_mode , que en este caso está en la dirección 40. Como sabemos que 0x7c00 es la dirección de los primeros bytes del bootloader debemos sumar 40 a esta dirección para encontrar la dirección de código de la etiqueta, utilizamos esta información para colocar un break en dicha dirección.
+
+![gdb luego de un break en 0x7c40 + x/20i](images/protected_mode_gdb.png)
+
+Luego de ejecutar x/20i 0x7c40 observamos que coincide con el código de main.S luego de la etiqueta protected_mode. Podremos ahora un break en la dirección 0x7c4c (que es donde se terminan de setear los registros) e intentaremos avanzar un step.
+
+![interrupción observada en gdb](images/protected_mode_int_gdb.png)
+
+Nótese que la dirección que se ejecuta luego del step no es 0x7c4e, sino que es 0xe05b, esto indica que (como era de esperarse) al intentar ejecutar la línea:
+
+```
+mov $message, %ecx
+```
+
+Una interrupción se dispara por no tener permisos para escribir en el segmento de datos.
 
